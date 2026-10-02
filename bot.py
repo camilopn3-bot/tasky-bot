@@ -10,7 +10,7 @@ from threading import Thread
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "¡Tasky está vivo y funcionando versión PRO Unificada!"
+    return "¡Tasky está vivo y funcionando versión PRO Memoria de Tareas!"
 
 def run_server():
     port = int(os.environ.get('PORT', 8080))
@@ -72,7 +72,7 @@ roles_catering = [
 ]
 
 roles_disponibles = roles_catering.copy()
-usuarios_estado = {}
+usuarios_estado = {} # Ahora guardará el estado Y la tarea específica
 
 def obtener_fecha_california():
     hora_utc = datetime.utcnow()
@@ -93,11 +93,12 @@ async def motor_asignar_tarea(ctx, miembro: discord.Member):
     global roles_disponibles, usuarios_estado
     
     if miembro.id in usuarios_estado:
-        estado = usuarios_estado[miembro.id]
+        estado = usuarios_estado[miembro.id]["estado"]
+        titulo = usuarios_estado[miembro.id]["tarea"].split('\n')[0] # Saca solo el título de la tarea
         if estado == "pendiente":
-            await ctx.send(f"🚫 {miembro.mention} ya tiene una tarea asignada hoy / already has a task today.")
+            await ctx.send(f"🚫 {miembro.mention} ya tiene una tarea asignada hoy / already has a task today: {titulo}")
         elif estado == "terminada":
-            await ctx.send(f"✅ {miembro.mention} ya completó su tarea del día / already completed today's task.")
+            await ctx.send(f"✅ {miembro.mention} ya completó su tarea del día / already completed today's task: {titulo}")
         return False
 
     if not roles_disponibles:
@@ -105,8 +106,10 @@ async def motor_asignar_tarea(ctx, miembro: discord.Member):
         return False
 
     rol_elegido = random.choice(roles_disponibles)
-    roles_disponibles.remove(rol_elegido)
-    usuarios_estado[miembro.id] = "pendiente"
+    roles_disponibles.remove(rol_elegido) # ¡AQUÍ SE BORRA LA TAREA DEL DÍA!
+    
+    # Se guarda que está pendiente y QUÉ tarea le tocó
+    usuarios_estado[miembro.id] = {"estado": "pendiente", "tarea": rol_elegido}
 
     mensaje = (
         f"{miembro.mention}, tu tarea asignada es:\n\n{rol_elegido}\n\n"
@@ -120,7 +123,7 @@ async def motor_asignar_tarea(ctx, miembro: discord.Member):
 
 @bot.event
 async def on_ready():
-    print(f'¡Tasky ({bot.user}) conectado y unificado!')
+    print(f'¡Tasky ({bot.user}) conectado y con Memoria Activa!')
 
 # ----------------------------------------------------
 # COMANDOS REGULARES PARA EL EQUIPO (!task, !tarea)
@@ -129,12 +132,10 @@ async def on_ready():
 async def task(ctx, *, argumento: str = None):
     verificar_cambio_de_dia()
     
-    # Si escriben "!tarea terminada"
     if argumento and argumento.lower() in ["terminada", "terminado", "terminar", "done"]:
         await ctx.invoke(bot.get_command('terminar'))
         return
         
-    # Si la mánager usa !task @milo por costumbre, también funcionará
     if ctx.message.mentions:
         if not ctx.author.guild_permissions.administrator:
             await ctx.send("🚫 Solo los administradores pueden asignar tareas a otras personas / Only admins can assign tasks.")
@@ -144,7 +145,6 @@ async def task(ctx, *, argumento: str = None):
             await motor_asignar_tarea(ctx, miembro)
         return
 
-    # Si lo pides para ti mismo
     await motor_asignar_tarea(ctx, ctx.author)
 
 # ----------------------------------------------------
@@ -155,8 +155,8 @@ async def terminar(ctx):
     verificar_cambio_de_dia()
     
     if ctx.author.id in usuarios_estado:
-        if usuarios_estado[ctx.author.id] == "pendiente":
-            usuarios_estado[ctx.author.id] = "terminada"
+        if usuarios_estado[ctx.author.id]["estado"] == "pendiente":
+            usuarios_estado[ctx.author.id]["estado"] = "terminada"
             
             mensaje_rojo = (
                 f"✅ {ctx.author.mention}, has marcado tu tarea como completada. ¡Buen trabajo! Quedas liberado por hoy.\n\n"
@@ -166,7 +166,8 @@ async def terminar(ctx):
             )
             await ctx.send(mensaje_rojo)
         else:
-            await ctx.send(f"ℹ️ {ctx.author.mention}, ya habías marcado tu tarea como completada / you already completed your task.")
+            titulo = usuarios_estado[ctx.author.id]["tarea"].split('\n')[0]
+            await ctx.send(f"ℹ️ {ctx.author.mention}, ya habías marcado tu tarea como completada / you already completed your task: {titulo}")
     else:
         await ctx.send(f"ℹ️ {ctx.author.mention}, no tienes ninguna tarea asignada el día de hoy / you have no task assigned today.")
 
@@ -182,31 +183,46 @@ async def repartir(ctx):
         await ctx.send("🚫 No quedan tareas disponibles para repartir / No tasks left to assign.")
         return
 
-    # Verifica si la mánager etiquetó un rol (@Team) o a una persona (@Milo)
     if not ctx.message.mentions and not ctx.message.role_mentions:
         await ctx.send("🚫 Debes mencionar a quién quieres asignarle tareas. Ejemplo: `!assign @Team` o `!assign @Milo`")
         return
 
-    miembros_a_asignar = set() # Usamos 'set' para evitar que alguien reciba doble si etiquetan rol y nombre a la vez
+    miembros_a_asignar = set()
+    ya_tienen_tarea = set()
 
-    # 1. Extraer personas si etiquetó un rol (ej. @Team)
     for rol in ctx.message.role_mentions:
         for miembro in rol.members:
-            if not miembro.bot and miembro.id not in usuarios_estado:
-                miembros_a_asignar.add(miembro)
+            if not miembro.bot:
+                if miembro.id not in usuarios_estado:
+                    miembros_a_asignar.add(miembro)
+                else:
+                    ya_tienen_tarea.add(miembro)
 
-    # 2. Extraer a la persona si la etiquetó individualmente (ej. @Milo)
     for miembro in ctx.message.mentions:
-        if not miembro.bot and miembro.id not in usuarios_estado:
-            miembros_a_asignar.add(miembro)
+        if not miembro.bot:
+            if miembro.id not in usuarios_estado:
+                miembros_a_asignar.add(miembro)
+            else:
+                ya_tienen_tarea.add(miembro)
+
+    # Si alguien ya tenía tarea, se lo avisamos a la jefa mostrándole el título
+    if ya_tienen_tarea:
+        mensajes_ya_tienen = []
+        for m in ya_tienen_tarea:
+            titulo = usuarios_estado[m.id]["tarea"].split('\n')[0]
+            estado_texto = "Completada" if usuarios_estado[m.id]["estado"] == "terminada" else "Pendiente"
+            mensajes_ya_tienen.append(f"• {m.mention}: {titulo} ({estado_texto})")
+            
+        texto_aviso = "ℹ️ **Aviso / Notice:** Los siguientes miembros ya tenían una tarea asignada previamente:\n" + "\n".join(mensajes_ya_tienen)
+        await ctx.send(texto_aviso)
 
     miembros_lista = list(miembros_a_asignar)
 
     if not miembros_lista:
-        await ctx.send("ℹ️ Las personas mencionadas ya tienen tarea o no están disponibles / Mentioned users already have a task.")
+        await ctx.send("ℹ️ No hay miembros libres sin tarea para asignar en este momento / No available members without tasks to assign.")
         return
 
-    await ctx.send("🎲 **¡Repartiendo tareas al azar / Assigning random tasks!** 🎲")
+    await ctx.send("🎲 **¡Repartiendo las tareas restantes al azar / Assigning random tasks!** 🎲")
     
     random.shuffle(miembros_lista)
     asignados = 0
@@ -218,7 +234,7 @@ async def repartir(ctx):
         if exito:
             asignados += 1
             
-    await ctx.send(f"✅ Se han asignado {asignados} tareas automáticas / {asignados} tasks successfully assigned.")
+    await ctx.send(f"✅ Se han asignado {asignados} tareas automáticas al equipo / {asignados} tasks successfully assigned.")
 
 keep_alive()
 bot.run(os.getenv('DISCORD_TOKEN'))
